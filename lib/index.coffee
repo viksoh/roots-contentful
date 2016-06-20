@@ -32,6 +32,12 @@ module.exports = (opts) ->
     accessToken: opts.access_token
     space: opts.space_id
 
+  previewClient = contentful.createClient
+    host:
+      hosts.develop
+    accessToken: opts.preview_token
+    space: opts.space_id
+
   class RootsContentful
     _sleep = (ms) ->
       start = new Date().getTime()
@@ -159,18 +165,28 @@ module.exports = (opts) ->
     ###
 
     fetch_content = (type) ->
-      W(
-        if opts.preview
-          _sleep 100
-        client.entries(_.merge(
-          type.filters,
-          content_type: type.id,
-          include: 10,
-          locale: type.locale,
-          limit: 1000
+      if type.id == 'news' && opts.preview
+        W(
+          previewClient.entries(_.merge(
+            type.filters,
+            content_type: type.id,
+            include: 10,
+            locale: type.locale,
+            limit: 1000
+            )
           )
         )
-      )
+      else
+        W(
+          client.entries(_.merge(
+            type.filters,
+            content_type: type.id,
+            include: 10,
+            locale: type.locale,
+            limit: 1000
+            )
+          )
+        )
 
     ###*
       * Fetch all locales in space
