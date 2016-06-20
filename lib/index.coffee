@@ -16,8 +16,7 @@ errors =
   a different value.'
 
 hosts =
-  develop: 'cdn.contentful.com'
-  preview: 'preview.contentful.com'
+  develop: 'preview.contentful.com'
   production: 'cdn.contentful.com'
 
 module.exports = (opts) ->
@@ -25,22 +24,13 @@ module.exports = (opts) ->
   if not (opts.access_token && opts.space_id)
     throw new Error errors.no_token
 
-  previewClient = contentful.createClient
-    host:
-      hosts.preview
-    accessToken: opts.preview_token
-    space: opts.space_id
   # setup contentful api client
   client = contentful.createClient
     host:
       hosts[process.env.CONTENTFUL_ENV] ||
-      (hosts.develop if opts.preview)   ||
       hosts.production
     accessToken: opts.access_token
     space: opts.space_id
-
-  console.log 'create Preview Client'
-  
 
   class RootsContentful
     _sleep = (ms) ->
@@ -169,30 +159,18 @@ module.exports = (opts) ->
     ###
 
     fetch_content = (type) ->
-      if type.id == 'news' && opts.preview
-        W(
-          previewClient.entries(_.merge(
-            type.filters,
-            content_type: type.id,
-            include: 10,
-            locale: type.locale,
-            limit: 1000
-            )
+      W(
+        if opts.preview
+          _sleep 100
+        client.entries(_.merge(
+          type.filters,
+          content_type: type.id,
+          include: 10,
+          locale: type.locale,
+          limit: 1000
           )
         )
-      else
-        W(
-          client.entries(_.merge(
-            type.filters,
-            content_type: type.id,
-            include: 10,
-            locale: type.locale,
-            limit: 1000
-            )
-          )
-        )
-
-      
+      )
 
     ###*
       * Fetch all locales in space
