@@ -16,7 +16,8 @@ errors =
   a different value.'
 
 hosts =
-  develop: 'preview.contentful.com'
+  develop: 'cdn.contentful.com'
+  preview: 'preview.contentful.com'
   production: 'cdn.contentful.com'
 
 module.exports = (opts) ->
@@ -24,6 +25,11 @@ module.exports = (opts) ->
   if not (opts.access_token && opts.space_id)
     throw new Error errors.no_token
 
+  previewClient = contentful.createClient
+    host:
+      hosts.preview
+    accessToken: opts.preview_token
+    space: opts.space_id
   # setup contentful api client
   client = contentful.createClient
     host:
@@ -33,7 +39,14 @@ module.exports = (opts) ->
     accessToken: opts.access_token
     space: opts.space_id
 
+  console.log 'create Preview Client'
+  
+
   class RootsContentful
+    _sleep = (ms) ->
+      start = new Date().getTime()
+      continue while new Date().getTime() - start < ms
+
     constructor: (@roots) ->
       @util = new RootsUtil(@roots)
       @roots.config.locals ?= {}
@@ -41,7 +54,7 @@ module.exports = (opts) ->
       @roots.config.locals.asset = asset_view_helper
 
     setup: ->
-      configure_content(opts.content_types).with(@)
+      configure_content(opts).with(@)
         .then(get_all_content)
         .tap(set_urls)
         .then(transform_entries)
@@ -57,18 +70,70 @@ module.exports = (opts) ->
      * @return {Promise} - returns an array of configured content types
     ###
 
-    configure_content = (types) ->
-      if _.isPlainObject(types) then types = reconfigure_alt_type_config(types)
-      W.map types, (t) ->
-        if not t.id then return W.reject(errors.no_type_id)
-        t.filters ?= {}
-        if (not t.name || (t.template && not t.path))
-          return W client.contentType(t.id).then (res) ->
-            t.name ?= pluralize(S(res.name).toLowerCase().underscore().s)
-            if t.template
-              t.path ?= (e) -> "#{t.name}/#{S(e[res.displayField]).slugify().s}"
-            return t
-        return W.resolve(t)
+    configure_content = (opts) ->
+      types = opts.content_types
+      locales = opts.locale
+      lPrefixes = opts.locales_prefix
+
+      isWildcard = -> # if locales is wildcard `*`, fetch & set locales
+        return W(
+          if locales is "*"
+            fetch_all_locales().then (res) ->
+              locales = res
+              W.resolve locales
+          else
+            W.resolve
+        )
+
+      reconfigObj = ->
+        types = reconfigure_alt_type_config(types) if _.isPlainObject(types)
+
+      localesArray = ->
+        if _.isArray(locales) # duplicate & update type to contain locale's data
+          for locale in locales
+            for t in types
+              unless t.locale? # type's locale overrides global locale
+                tmp = _.clone(t, true) # create clone
+                tmp.locale = locale
+                tmp.prefix = lPrefixes?[locale] ? "#{locale.replace(/-/,'_')}_"
+                types.push tmp # add to types
+              else
+                # set prefix, only if it isn't set
+                t.prefix ?= lPrefixes?[locale] ? "#{locale.replace(/-/,'_')}_"
+
+          types = _.remove types, (t) -> t.locale? # remove dupes w/o locale
+        else
+          if _.isString opts.locale
+            global_locale = true
+
+      isWildcard()
+        .then reconfigObj
+        .then localesArray
+        .then ->
+          W.map types, (t) ->
+            if not t.id then return W.reject(errors.no_type_id)
+            t.filters ?= {}
+
+            if (not t.name || (t.template && not t.path))
+              return W client.contentType(t.id).then (res) ->
+                t.name ?= pluralize(S(res.name).toLowerCase().underscore().s)
+
+                unless _.isUndefined lPrefixes
+                  t.name = t.prefix + t.name
+
+                if t.template or lPrefixes?
+                  t.path ?= (e) ->
+                    "#{t.name}/#{S(e[res.displayField]).slugify().s}"
+
+                return t
+
+            unless _.isUndefined lPrefixes
+              t.name = t.prefix + t.name
+
+            if global_locale? then t.locale or= opts.locale
+
+            return W.resolve(t)
+
 
     ###*
      * Reconfigures content types set in app.coffee using an object instead of
@@ -104,10 +169,44 @@ module.exports = (opts) ->
     ###
 
     fetch_content = (type) ->
-      W(
-        client.entries(
-          _.merge(type.filters, content_type: type.id, include: 10)
+      if type.id == 'news' && opts.preview
+        W(
+          previewClient.entries(_.merge(
+            type.filters,
+            content_type: type.id,
+            include: 10,
+            locale: type.locale,
+            limit: 1000
+            )
+          )
         )
+      else
+        W(
+          client.entries(_.merge(
+            type.filters,
+            content_type: type.id,
+            include: 10,
+            locale: type.locale,
+            limit: 1000
+            )
+          )
+        )
+
+      
+
+    ###*
+      * Fetch all locales in space
+      * Used when `*` is used in opts.locales
+      * @return {Array} - returns array of locales
+    ###
+
+    fetch_all_locales = ->
+      W(client.space()
+        .then (res) ->
+          locales = []
+          for locale in res.locales
+            locales.push locale.code
+          W.resolve locales
       )
 
     ###*
@@ -126,7 +225,7 @@ module.exports = (opts) ->
 
     format_entry = (e) ->
       if _.has(e.fields, 'sys') then return W.reject(errors.sys_conflict)
-      _.assign(_.omit(e, 'fields'), e.fields)
+      _.assign(_.omit(_.omit(e, 'sys'), 'fields'), e.fields)
 
     ###*
      * Sets `_url` and `_urls` properties on content with single entry views
@@ -151,8 +250,10 @@ module.exports = (opts) ->
     ###
 
     set_locals = (types) ->
-      W.map types, (t) =>
-        @roots.config.locals.contentful[t.name] = t.content
+      contentful = @roots.config.locals.contentful
+      W.map types, (t) ->
+        if contentful[t.name] then contentful[t.name].push t.content[0]
+        else contentful[t.name] = t.content
 
     ###*
      * Transforms every type with content with the user provided callback
@@ -161,9 +262,9 @@ module.exports = (opts) ->
     ###
 
     transform_entries = (types) ->
-      W.map types, (t) =>
+      W.map types, (t) ->
         if t.transform
-          W.map t.content, (entry) =>
+          W.map t.content, (entry) ->
             W(entry, t.transform)
         W.resolve(t)
 
@@ -174,10 +275,10 @@ module.exports = (opts) ->
     ###
 
     sort_entries = (types) ->
-      W.map types, (t) =>
+      W.map types, (t) ->
         if t.sort
-          # Unfortunately, in order to sort promises we have to resolve them first.
-          W.all(t.content).then (data) =>
+          # In order to sort promises we have to resolve them first.
+          W.all(t.content).then (data) ->
             t.content = data.sort(t.sort)
         W.resolve(t)
 
