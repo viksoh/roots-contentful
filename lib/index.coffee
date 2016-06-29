@@ -165,7 +165,7 @@ module.exports = (opts) ->
     ###
 
     fetch_content = (type) ->
-      if type.id == 'news' && opts.preview
+      if opts.preview && type.id in opts.preview_datatypes
         W(
           previewClient.entries(_.merge(
             type.filters,
